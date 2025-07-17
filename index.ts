@@ -127,10 +127,53 @@ const removeCommand = Command.make("remove", { name: nameArg }, ({ name }) =>
   })
 );
 
+const renameCommand = Command.make(
+  "rename",
+  {
+    oldName: Args.text({ name: "old-name" }),
+    newName: Args.text({ name: "new-name" })
+  },
+  ({ oldName, newName }) =>
+    Effect.gen(function* () {
+      const oldPath = join(WORKTREES_DIR, oldName);
+      const newPath = join(WORKTREES_DIR, newName);
+      
+      if (!existsSync(oldPath)) {
+        yield* Console.error(`Worktree '${oldName}' does not exist`);
+        yield* Effect.fail(new Error(`Worktree '${oldName}' does not exist`));
+      }
+      
+      if (existsSync(newPath)) {
+        yield* Console.error(`Worktree '${newName}' already exists`);
+        yield* Effect.fail(new Error(`Worktree '${newName}' already exists`));
+      }
+      
+      // First, we need to get the current branch name
+      const worktrees = yield* getWorktrees;
+      const worktree = worktrees.find(wt => wt.name === oldName);
+      
+      if (!worktree) {
+        yield* Console.error(`Could not find worktree information for '${oldName}'`);
+        yield* Effect.fail(new Error(`Could not find worktree information for '${oldName}'`));
+      }
+      
+      // Remove the old worktree
+      yield* execCommand("git", ["worktree", "remove", oldPath]);
+      
+      // Rename the branch
+      yield* execCommand("git", ["branch", "-m", worktree.branch, newName]);
+      
+      // Create new worktree with the renamed branch
+      yield* execCommand("git", ["worktree", "add", newPath, newName]);
+      
+      yield* Console.log(`Renamed worktree from '${oldName}' to '${newName}'`);
+    })
+);
+
 const wtCommand = Command.make("wt", {}, () =>
   Console.log("wt - Git worktree utility\n\nUse 'wt --help' for more information")
 ).pipe(
-  Command.withSubcommands([createCommand, listCommand, switchCommand, removeCommand])
+  Command.withSubcommands([createCommand, listCommand, switchCommand, removeCommand, renameCommand])
 );
 
 const cli = Command.run(wtCommand, {
