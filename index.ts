@@ -111,37 +111,28 @@ const switchCommand = Command.make("switch", { name: nameArg }, ({ name }) =>
     const fullPath = join(process.cwd(), worktreePath);
     yield* Console.log(`Switching to worktree '${name}' at ${fullPath}`);
     
-    // Start a new shell in the worktree directory
+    // Use Bun's spawn with stdio: "inherit" to properly handle terminal
     const shell = process.env.SHELL || '/bin/bash';
-    const shellName = shell.split('/').pop();
     
-    // Set up environment with custom prompt
-    const env = { ...process.env };
-    
-    // Set worktree name in environment
-    env.WT_NAME = name;
-    
-    // Customize prompt based on shell type
-    if (shellName === 'bash') {
-      // For bash, set PS1 directly
-      env.PS1 = `\\[\\033[36m\\][${name}]\\[\\033[0m\\] \\w $ `;
-    } else if (shellName === 'zsh') {
-      // For zsh, use PROMPT
-      env.PROMPT = `%F{cyan}[${name}]%f %~ %# `;
-    } else if (shellName === 'fish') {
-      // For fish, we'll need to use a different approach
-      env.FISH_PROMPT = `[${name}]`;
-    }
-    
-    // Also set a generic prompt indicator
-    env.PROMPT_COMMAND = `echo -ne "\\033]0;wt: ${name}\\007"`;
-    
-    yield* PlatformCommand.make(shell).pipe(
-      PlatformCommand.workingDirectory(fullPath),
-      PlatformCommand.env(env),
-      PlatformCommand.stdin("inherit"),
-      PlatformCommand.exitCode
-    );
+    // Execute the shell using Bun.spawn which properly handles interactive terminals
+    yield* Effect.tryPromise({
+      try: async () => {
+        const proc = Bun.spawn([shell], {
+          cwd: fullPath,
+          stdio: ["inherit", "inherit", "inherit"],
+          env: {
+            ...process.env,
+            WT_NAME: name,
+            // Add a simple indicator to the shell prompt
+            PS1: process.env.PS1 ? `[${name}] ${process.env.PS1}` : `[${name}] \\w $ `,
+          }
+        });
+        
+        await proc.exited;
+        return proc.exitCode || 0;
+      },
+      catch: (error) => new Error(`Failed to switch to worktree: ${error}`)
+    });
   })
 );
 
