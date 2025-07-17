@@ -2,7 +2,7 @@
 
 import { Args, Command } from "@effect/cli";
 import { BunContext, BunRuntime } from "@effect/platform-bun";
-import { Command as PlatformCommand } from "@effect/platform";
+import { Command as PlatformCommand, FileSystem } from "@effect/platform";
 import { Console, Effect } from "effect";
 import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
@@ -108,8 +108,40 @@ const switchCommand = Command.make("switch", { name: nameArg }, ({ name }) =>
       yield* Effect.fail(new Error(`Worktree '${name}' does not exist`));
     }
 
-    yield* Console.log(`Switching to worktree '${name}' at ${worktreePath}`);
-    yield* Console.log(`Run: cd ${worktreePath}`);
+    const fullPath = join(process.cwd(), worktreePath);
+    yield* Console.log(`Switching to worktree '${name}' at ${fullPath}`);
+    
+    // Start a new shell in the worktree directory
+    const shell = process.env.SHELL || '/bin/bash';
+    const shellName = shell.split('/').pop();
+    
+    // Set up environment with custom prompt
+    const env = { ...process.env };
+    
+    // Set worktree name in environment
+    env.WT_NAME = name;
+    
+    // Customize prompt based on shell type
+    if (shellName === 'bash') {
+      // For bash, set PS1 directly
+      env.PS1 = `\\[\\033[36m\\][${name}]\\[\\033[0m\\] \\w $ `;
+    } else if (shellName === 'zsh') {
+      // For zsh, use PROMPT
+      env.PROMPT = `%F{cyan}[${name}]%f %~ %# `;
+    } else if (shellName === 'fish') {
+      // For fish, we'll need to use a different approach
+      env.FISH_PROMPT = `[${name}]`;
+    }
+    
+    // Also set a generic prompt indicator
+    env.PROMPT_COMMAND = `echo -ne "\\033]0;wt: ${name}\\007"`;
+    
+    yield* PlatformCommand.make(shell).pipe(
+      PlatformCommand.workingDirectory(fullPath),
+      PlatformCommand.env(env),
+      PlatformCommand.stdin("inherit"),
+      PlatformCommand.exitCode
+    );
   })
 );
 
@@ -137,18 +169,23 @@ const renameCommand = Command.make(
     Effect.gen(function* () {
       const oldPath = join(WORKTREES_DIR, oldName);
       const newPath = join(WORKTREES_DIR, newName);
+      const fs = yield* FileSystem.FileSystem;
       
-      if (!existsSync(oldPath)) {
+      // Check if old worktree exists
+      const oldExists = yield* fs.exists(oldPath);
+      if (!oldExists) {
         yield* Console.error(`Worktree '${oldName}' does not exist`);
         yield* Effect.fail(new Error(`Worktree '${oldName}' does not exist`));
       }
       
-      if (existsSync(newPath)) {
+      // Check if new path already exists
+      const newExists = yield* fs.exists(newPath);
+      if (newExists) {
         yield* Console.error(`Worktree '${newName}' already exists`);
         yield* Effect.fail(new Error(`Worktree '${newName}' already exists`));
       }
       
-      // First, we need to get the current branch name
+      // Get the current branch name
       const worktrees = yield* getWorktrees;
       const worktree = worktrees.find(wt => wt.name === oldName);
       
@@ -157,14 +194,18 @@ const renameCommand = Command.make(
         yield* Effect.fail(new Error(`Could not find worktree information for '${oldName}'`));
       }
       
-      // Remove the old worktree
-      yield* execCommand("git", ["worktree", "remove", oldPath]);
+      // Move the worktree to the new path
+      yield* execCommand("git", ["worktree", "move", oldPath, newPath]);
       
-      // Rename the branch
-      yield* execCommand("git", ["branch", "-m", worktree.branch, newName]);
+      // Get the current directory to restore later
+      const currentDir = process.cwd();
       
-      // Create new worktree with the renamed branch
-      yield* execCommand("git", ["worktree", "add", newPath, newName]);
+      // Change to the worktree directory and rename the branch
+      process.chdir(newPath);
+      yield* execCommand("git", ["branch", "-m", newName]);
+      
+      // Change back to original directory
+      process.chdir(currentDir);
       
       yield* Console.log(`Renamed worktree from '${oldName}' to '${newName}'`);
     })
